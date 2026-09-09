@@ -4,8 +4,58 @@ An on-demand Valheim dedicated server on AWS, controlled from Discord with `/val
 `/valheim stop` and `/valheim status`. The box shuts itself down when nobody is playing, so
 you only pay for the hours you actually raid in.
 
-Built on the same CDK pattern as the Satisfactory server, with the Discord slash command
-plumbing borrowed from [samchungy/valheim-aws-spot-server](https://github.com/samchungy/valheim-aws-spot-server).
+Runs **Valheim 1.0** (`l-1.0.7`, network version 39), with crossplay enabled so Steam,
+Xbox/Game Pass, PS5 and Switch 2 players can all join the same world.
+
+## Lineage
+
+This borrows from two earlier projects and modernises both:
+
+- The CDK hosting pattern (EC2 + Elastic IP + S3 saves + idle shutdown + a restart API)
+  comes from the [Satisfactory server hosting](https://github.com/dford25a/satisfactory-server-aws-docker) setup.
+- The Discord slash command design comes from
+  [samchungy/valheim-aws-spot-server](https://github.com/samchungy/valheim-aws-spot-server).
+
+### What is different here
+
+| | Upstream | Here |
+|---|---|---|
+| IaC | Serverless Framework | AWS CDK (TypeScript) |
+| Base image | Amazon Linux 2, `amazon-linux-extras` | Ubuntu 22.04, `get.docker.com` |
+| Compose | pinned `v2.0.0-rc.3`, `version: '3'` key | current compose plugin, no obsolete key |
+| Discord auth | `tweetnacl` dependency | Node's native `crypto` Ed25519, zero deps |
+| Idle shutdown | none (spot termination watcher only) | player-count aware, see below |
+| Crossplay | not supported | `-crossplay` on by default |
+
+### Idle detection
+
+This is the one piece worth stealing. The obvious approach — and what the Satisfactory
+version does — is to watch UDP sockets:
+
+```sh
+ss -lu | grep 777 | awk '{s+=$2} END {print s}'   # sums Recv-Q
+```
+
+That is unreliable in general and actively wrong behind Docker, where `docker-proxy`
+owns the host socket and the real client traffic is NATed into the container. It also
+infers "somebody is playing" from buffer bytes rather than from players.
+
+Valheim logs its own player count every ~30 seconds:
+
+```
+Connections 2 ZDOS:12345 sent:...
+```
+
+So the shutdown timer reads that instead, which is the actual number the decision depends
+on, and is independent of the networking layer entirely:
+
+```sh
+docker logs --since 2m valheim | grep -oE 'Connections [0-9]+' | tail -1 | grep -oE '[0-9]+'
+```
+
+An absent heartbeat is treated as "unknown", not "idle", so a slow first install or a
+wedged server cannot shut itself down mid-setup. The same trick works for any game server
+that logs a player count.
 
 ## Architecture
 
@@ -144,3 +194,12 @@ Roughly `$0.086/hr` for the `m6a.large` while running, plus a few dollars a mont
   name, so switching back is just a config change and a restart.
 - Secrets live in SSM as `SecureString` parameters, not in the repo or the CloudFormation
   template. `server-hosting/config.ts` is gitignored.
+- **Game updates are decoupled from the image.** `mbround18/valheim` installs the server
+  through steamcmd when the container starts, so the running game tracks Steam's current
+  build regardless of how old the image is. Valheim 1.0 needed no changes here — unlike
+  Satisfactory, whose 1.0 and 1.1 releases moved the management API to TCP 7777 and the
+  join stream to TCP 8888. Valheim's UDP 2456-2458 layout has been stable throughout.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
