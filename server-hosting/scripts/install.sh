@@ -225,6 +225,8 @@ systemctl enable --now valheim-auto-shutdown
 
 # Belt and braces alongside the container's own 30 minute backup: this also
 # captures the live save, not just the archived backups.
-(crontab -l 2>/dev/null; echo "*/5 * * * * $VALHEIM_DIR/backup.sh >> /var/log/valheim-backup.log 2>&1") | crontab -
+# `crontab -l` exits 1 when the user has no crontab yet, which under `set -e` would
+# kill the subshell before the echo and take the whole install with it.
+(crontab -l 2>/dev/null || true; echo "*/5 * * * * $VALHEIM_DIR/backup.sh >> /var/log/valheim-backup.log 2>&1") | crontab -
 
 echo "Valheim server install complete."
