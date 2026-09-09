@@ -87,6 +87,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const interaction = JSON.parse(event.body!);
 
   if (interaction.type === INTERACTION_PING) {
+    // Worth logging: a signed PING is Discord validating the endpoint, and it is
+    // otherwise indistinguishable in the logs from an invocation that did nothing.
+    console.log('Responding to Discord PING (endpoint validation)');
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -104,6 +107,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   if (!subCommand || !['start', 'stop', 'status'].includes(subCommand)) {
     return reply('Unknown command. Try `/valheim start`, `/valheim stop` or `/valheim status`.');
   }
+
+  console.log(`Dispatching '${subCommand}' for ${interaction.member?.user?.username ?? 'unknown user'}`);
 
   // Fire and forget: Discord drops the interaction if we take longer than 3
   // seconds, and the control lambda posts the real outcome to the webhook.
