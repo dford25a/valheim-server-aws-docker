@@ -168,7 +168,10 @@ sleep 600
 while true; do
     sleep $CHECK_INTERVAL
 
-    players=$(docker logs --since "2m" valheim 2>&1 \
+    # A 2 minute window was too tight: the heartbeat is logged irregularly, so most
+    # checks came back "unknown" and were skipped, stretching a 30 minute idle timer
+    # to roughly 3.5 hours of wall clock. 10 minutes reliably catches one.
+    players=$(docker logs --since "10m" valheim 2>&1 \
         | grep -oE 'Connections [0-9]+' | tail -1 | grep -oE '[0-9]+' || true)
 
     if [ -z "$players" ]; then
@@ -189,9 +192,12 @@ while true; do
     fi
 
     if [ $idleChecks -ge $requiredChecks ]; then
-        echo "Idle for $IDLE_MINUTES minutes, shutting down."
-        # Stopping the unit saves the world and syncs it to S3 on the way out
-        systemctl stop valheim
+        echo "Idle for $IDLE_MINUTES minutes, powering off."
+        # Power off directly and let systemd stop valheim.service in dependency
+        # order, which runs its ExecStop (docker compose down) and ExecStopPost
+        # (S3 backup). Calling `systemctl stop valheim` here instead would trip
+        # this unit's own ordering dependency and kill this script mid-line,
+        # leaving the game down but the instance billing.
         shutdown -h now
         exit 0
     fi
@@ -205,7 +211,9 @@ cat > /etc/systemd/system/valheim-auto-shutdown.service << SHUTDOWNSVC
 [Unit]
 Description=Shut the box down when nobody is playing Valheim
 After=valheim.service
-Requires=valheim.service
+# Deliberately Wants= and not Requires=. Requires= propagates stops, so stopping
+# valheim.service would also kill this watchdog.
+Wants=valheim.service
 
 [Service]
 ExecStart=$VALHEIM_DIR/auto-shutdown.sh

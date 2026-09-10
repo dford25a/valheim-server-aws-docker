@@ -5,10 +5,15 @@ import {
   DescribeInstancesCommand,
 } from '@aws-sdk/client-ec2';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { createSocket } from 'node:dgram';
 
 const instanceId = process.env.INSTANCE_ID!;
 const serverIp = process.env.SERVER_IP!;
 const webhookParam = process.env.DISCORD_WEBHOOK_PARAM!;
+
+const GAME_PORT = 2456;
+// Valheim answers Steam A2S queries on the game port + 1
+const QUERY_PORT = GAME_PORT + 1;
 
 const ec2 = new EC2Client({ region: process.env.AWS_REGION });
 const ssm = new SSMClient({ region: process.env.AWS_REGION });
@@ -55,6 +60,42 @@ const getState = async (): Promise<string> => {
   return res.Reservations?.[0]?.Instances?.[0]?.State?.Name ?? 'unknown';
 };
 
+/**
+ * A running instance does not mean a joinable server: the container can be down
+ * while EC2 still reports 'running', which reads as "up" to players who then cannot
+ * connect. Probe the Steam query port (game port + 1) with an A2S_INFO packet so
+ * status reflects the game rather than the box.
+ */
+const isGameReachable = (timeoutMs = 2500): Promise<boolean> =>
+  new Promise((resolve) => {
+    const socket = createSocket('udp4');
+    // A2S_INFO: 0xFFFFFFFF header, 'T', then "Source Engine Query\0"
+    const query = Buffer.concat([
+      Buffer.from([0xff, 0xff, 0xff, 0xff, 0x54]),
+      Buffer.from('Source Engine Query\0', 'ascii'),
+    ]);
+
+    let settled = false;
+    const finish = (result: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        socket.close();
+      } catch {
+        // already closed
+      }
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.once('message', () => finish(true));
+    socket.once('error', () => finish(false));
+    socket.send(query, QUERY_PORT, serverIp, (err) => {
+      if (err) finish(false);
+    });
+  });
+
 export const handler = async (event: ControlEvent) => {
   const action = event?.action ?? 'status';
   const state = await getState();
@@ -81,11 +122,17 @@ export const handler = async (event: ControlEvent) => {
       await ec2.send(new StopInstancesCommand({ InstanceIds: [instanceId] }));
       message = 'Shutting the Valheim server down and backing the world up to S3.';
     }
+  } else if (state !== 'running') {
+    message = `Valheim server is ${state}. Use \`/valheim start\` to bring it up.`;
   } else {
-    message =
-      state === 'running'
-        ? `Valheim server is up at \`${serverIp}:2456\``
-        : `Valheim server is ${state}.`;
+    // The box is up, but that says nothing about whether the game is serving
+    const reachable = await isGameReachable();
+    message = reachable
+      ? `Valheim server is up at \`${serverIp}:${GAME_PORT}\``
+      : `The server box is running, but Valheim is **not responding** on ` +
+        `\`${serverIp}:${GAME_PORT}\`. It may still be loading the world — ` +
+        `give it a couple of minutes and check again.`;
+    console.log(`Game port probe: ${reachable ? 'reachable' : 'no response'}`);
   }
 
   await postToDiscord(message);
