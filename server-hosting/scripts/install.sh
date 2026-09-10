@@ -64,9 +64,13 @@ chown -R 1000:1000 "$VALHEIM_DIR/valheim"
 # Compose file
 ##########################################
 
-SERVER_ARGS=""
+# This image does NOT take crossplay as a raw server argument. Passing
+# SERVER_ARGS=-crossplay looks like it works but odin ignores it and logs
+# "With Crossplay: 0", leaving console players unable to get a join code.
+# ENABLE_CROSSPLAY is the variable it actually reads, and it defaults to 0.
+CROSSPLAY_FLAG=0
 if [ "$CROSSPLAY" = "true" ]; then
-    SERVER_ARGS="-crossplay"
+    CROSSPLAY_FLAG=1
 fi
 
 PUBLIC_FLAG=0
@@ -91,7 +95,7 @@ services:
       - WORLD=${WORLD_NAME}
       - PASSWORD=${SERVER_PASSWORD}
       - PUBLIC=${PUBLIC_FLAG}
-      - SERVER_ARGS=${SERVER_ARGS}
+      - ENABLE_CROSSPLAY=${CROSSPLAY_FLAG}
       - TZ=UTC
       - AUTO_UPDATE=1
       - AUTO_UPDATE_SCHEDULE=0 1 * * *
