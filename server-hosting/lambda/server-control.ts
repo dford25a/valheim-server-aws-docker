@@ -5,18 +5,18 @@ import {
   DescribeInstancesCommand,
 } from '@aws-sdk/client-ec2';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import { createSocket } from 'node:dgram';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 
 const instanceId = process.env.INSTANCE_ID!;
 const serverIp = process.env.SERVER_IP!;
 const webhookParam = process.env.DISCORD_WEBHOOK_PARAM!;
+const savesBucket = process.env.SAVES_BUCKET!;
 
 const GAME_PORT = 2456;
-// Valheim answers Steam A2S queries on the game port + 1
-const QUERY_PORT = GAME_PORT + 1;
 
 const ec2 = new EC2Client({ region: process.env.AWS_REGION });
 const ssm = new SSMClient({ region: process.env.AWS_REGION });
+const s3 = new S3Client({ region: process.env.AWS_REGION });
 
 export type ControlAction = 'start' | 'stop' | 'status';
 export interface ControlEvent {
@@ -60,41 +60,47 @@ const getState = async (): Promise<string> => {
   return res.Reservations?.[0]?.Instances?.[0]?.State?.Name ?? 'unknown';
 };
 
+interface ServerStatus {
+  ready: boolean;
+  joinCode: string;
+  players: number;
+  version: string;
+  updatedAt: string;
+}
+
 /**
- * A running instance does not mean a joinable server: the container can be down
- * while EC2 still reports 'running', which reads as "up" to players who then cannot
- * connect. Probe the Steam query port (game port + 1) with an A2S_INFO packet so
- * status reflects the game rather than the box.
+ * A running instance does not mean a joinable server: the game takes minutes to
+ * install and load after the box boots, and it can crash-loop while EC2 still
+ * reports 'running'.
+ *
+ * Probing the Steam query port does NOT work here. With crossplay enabled the
+ * server registers through PlayFab and never opens a Steam query server, so
+ * A2S_INFO times out even on a perfectly healthy world. Instead the instance
+ * publishes a heartbeat to S3 once a minute and we read that.
  */
-const isGameReachable = (timeoutMs = 2500): Promise<boolean> =>
-  new Promise((resolve) => {
-    const socket = createSocket('udp4');
-    // A2S_INFO: 0xFFFFFFFF header, 'T', then "Source Engine Query\0"
-    const query = Buffer.concat([
-      Buffer.from([0xff, 0xff, 0xff, 0xff, 0x54]),
-      Buffer.from('Source Engine Query\0', 'ascii'),
-    ]);
+const getServerStatus = async (): Promise<ServerStatus | undefined> => {
+  try {
+    const res = await s3.send(
+      new GetObjectCommand({ Bucket: savesBucket, Key: 'status.json' })
+    );
+    const body = await res.Body?.transformToString();
+    if (!body) return undefined;
 
-    let settled = false;
-    const finish = (result: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try {
-        socket.close();
-      } catch {
-        // already closed
-      }
-      resolve(result);
-    };
+    const status = JSON.parse(body) as ServerStatus;
 
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    socket.once('message', () => finish(true));
-    socket.once('error', () => finish(false));
-    socket.send(query, QUERY_PORT, serverIp, (err) => {
-      if (err) finish(false);
-    });
-  });
+    // A heartbeat older than a few minutes means the publisher died, so the
+    // contents no longer describe reality and must not be reported as current.
+    const ageMs = Date.now() - new Date(status.updatedAt).getTime();
+    if (ageMs > 5 * 60 * 1000) {
+      console.log(`Heartbeat is stale (${Math.round(ageMs / 1000)}s old)`);
+      return undefined;
+    }
+    return status;
+  } catch (err) {
+    console.log('No readable heartbeat', err);
+    return undefined;
+  }
+};
 
 export const handler = async (event: ControlEvent) => {
   const action = event?.action ?? 'status';
@@ -126,13 +132,25 @@ export const handler = async (event: ControlEvent) => {
     message = `Valheim server is ${state}. Use \`/valheim start\` to bring it up.`;
   } else {
     // The box is up, but that says nothing about whether the game is serving
-    const reachable = await isGameReachable();
-    message = reachable
-      ? `Valheim server is up at \`${serverIp}:${GAME_PORT}\``
-      : `The server box is running, but Valheim is **not responding** on ` +
-        `\`${serverIp}:${GAME_PORT}\`. It may still be loading the world — ` +
-        `give it a couple of minutes and check again.`;
-    console.log(`Game port probe: ${reachable ? 'reachable' : 'no response'}`);
+    const status = await getServerStatus();
+
+    if (status?.ready) {
+      const who =
+        status.players === 1 ? '1 player online' : `${status.players} players online`;
+      message =
+        `Valheim server is up at \`${serverIp}:${GAME_PORT}\`\n` +
+        `Join code: \`${status.joinCode}\` (console/Game Pass players need this)\n` +
+        `${who} · ${status.version}`;
+    } else if (status) {
+      message =
+        'The box is running and Valheim is still starting up — it installs and ' +
+        'loads the world first. Give it a couple of minutes.';
+    } else {
+      message =
+        'The box is running, but Valheim is **not reporting in**. It may still be ' +
+        'booting, or the server has failed to start. Check again shortly.';
+    }
+    console.log(`Heartbeat: ${status ? JSON.stringify(status) : 'none'}`);
   }
 
   await postToDiscord(message);

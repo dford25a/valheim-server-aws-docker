@@ -167,8 +167,12 @@ export class ValheimHostingStack extends Stack {
         INSTANCE_ID: server.instanceId,
         SERVER_IP: eip.ref,
         DISCORD_WEBHOOK_PARAM: Config.discordWebhookParam,
+        SAVES_BUCKET: savesBucket.bucketName,
       },
     });
+
+    // Reads the status.json heartbeat the instance publishes
+    savesBucket.grantRead(serverControlLambda);
 
     serverControlLambda.addToRolePolicy(
       new iam.PolicyStatement({

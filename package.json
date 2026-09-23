@@ -21,6 +21,7 @@
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.600.0",
     "@aws-sdk/client-lambda": "^3.600.0",
+    "@aws-sdk/client-s3": "^3.1138.0",
     "@aws-sdk/client-ssm": "^3.600.0",
     "aws-cdk-lib": "^2.170.0",
     "constructs": "^10.0.0",

@@ -126,6 +126,50 @@ BACKUP
 chmod +x "$VALHEIM_DIR/backup.sh"
 
 ##########################################
+# Status heartbeat
+##########################################
+
+# The control lambda cannot see inside the box, and probing the Steam query port
+# does not work: with crossplay the server registers through PlayFab and never
+# opens a Steam query server, so A2S always times out even on a healthy world.
+# Instead the server publishes what it knows to S3 once a minute, which also
+# surfaces the join code — that rotates on every restart and is otherwise only
+# discoverable by reading container logs.
+cat > "$VALHEIM_DIR/heartbeat.sh" << 'HEARTBEAT'
+#!/bin/bash
+BUCKET="__BUCKET__"
+REGION="__REGION__"
+AWS=/usr/local/bin/aws
+
+logs=$(docker logs --since 15m valheim 2>&1 | sed -e 's/\x1b\[[0-9;]*m//g')
+
+joinCode=$(echo "$logs" | grep -oE 'join code [0-9]+' | tail -1 | grep -oE '[0-9]+')
+players=$(echo "$logs" | grep -oE 'is active with [0-9]+ player' | tail -1 | grep -oE '[0-9]+')
+version=$(echo "$logs" | grep -oE 'Valheim version: [^ ]+' | tail -1 | awk '{print $3}')
+
+# "ready" means the world finished loading and the session registered, not merely
+# that the container is up — the container is up for several minutes while the
+# game is still installing and loading.
+ready=false
+if [ -n "$joinCode" ]; then ready=true; fi
+
+cat > /tmp/status.json << JSON
+{
+  "ready": $ready,
+  "joinCode": "${joinCode:-unknown}",
+  "players": ${players:-0},
+  "version": "${version:-unknown}",
+  "updatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+JSON
+
+$AWS s3 cp /tmp/status.json "s3://$BUCKET/status.json" --region "$REGION" --quiet
+HEARTBEAT
+
+sed -i "s|__BUCKET__|$S3_BUCKET|; s|__REGION__|$REGION|" "$VALHEIM_DIR/heartbeat.sh"
+chmod +x "$VALHEIM_DIR/heartbeat.sh"
+
+##########################################
 # Valheim service
 ##########################################
 
@@ -240,5 +284,8 @@ systemctl enable --now valheim-auto-shutdown
 # `crontab -l` exits 1 when the user has no crontab yet, which under `set -e` would
 # kill the subshell before the echo and take the whole install with it.
 (crontab -l 2>/dev/null || true; echo "*/5 * * * * $VALHEIM_DIR/backup.sh >> /var/log/valheim-backup.log 2>&1") | crontab -
+
+# Status heartbeat, every minute so /valheim status is never badly stale
+(crontab -l 2>/dev/null || true; echo "* * * * * $VALHEIM_DIR/heartbeat.sh >> /var/log/valheim-heartbeat.log 2>&1") | crontab -
 
 echo "Valheim server install complete."
