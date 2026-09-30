@@ -85,6 +85,14 @@ services:
     container_name: valheim
     restart: unless-stopped
     stop_grace_period: 2m
+    # Valheim can spew stack traces in a tight loop (its external-IP lookup throws
+    # on every retry when the host has no IPv6), which grew the log to 138 MB on a
+    # single boot. Unbounded json-file logging would eventually fill the volume.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     ports:
       - 2456:2456/udp
       - 2457:2457/udp
