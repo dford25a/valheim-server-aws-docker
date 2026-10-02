@@ -22,11 +22,21 @@ export const Config = {
     crossplay: true,
     // List the server publicly in the in-game browser
     public: true,
-    // Instance type. Valheim is RAM hungry once a world grows;
-    // m6a.large (2 vCPU / 8 GB) comfortably handles ~10 players.
-    instanceType: 'm6a.large',
+    // Instance type. Valheim's simulation loop is effectively single-threaded, so
+    // per-core speed matters far more than core count or RAM. m7a.large is the same
+    // 2 vCPU / 8 GB shape as m6a.large on a materially faster Genoa core.
+    instanceType: 'm7a.large',
     // Minutes with no players connected before the box shuts itself down
     idleShutdownMinutes: 30,
+    // Vanilla world modifiers, comma separated "name=value". These are server-side,
+    // so they apply to every player including console — no mods required.
+    //   resources:    muchless | less | more | muchmore | most  (0.5x .. 3x)
+    //   combat:       veryeasy | easy | hard | veryhard
+    //   deathpenalty: casual | veryeasy | easy | hard | hardcore
+    //   raids:        none | muchless | less | more | muchmore
+    //   portals:      casual | hard | veryhard
+    // Caution: `resources` scales ALL drops, not just ore.
+    worldModifiers: 'resources=muchmore',
 
     //////////////////////////////////////////
     // SSM SecureString parameter names

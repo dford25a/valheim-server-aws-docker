@@ -11,6 +11,7 @@ set -euo pipefail
 #  7: SSM parameter name holding the server password
 #  8: SSM parameter name holding the Discord webhook URL
 #  9: AWS region
+# 10: vanilla world modifiers, comma separated "name=value" (optional)
 S3_BUCKET=$1
 SERVER_NAME=$2
 WORLD_NAME=$3
@@ -20,6 +21,7 @@ IDLE_MINUTES=${6:-30}
 PASSWORD_PARAM=$7
 WEBHOOK_PARAM=$8
 REGION=$9
+WORLD_MODIFIERS=${10:-}
 
 VALHEIM_DIR=/opt/valheim
 AWS=/usr/local/bin/aws
@@ -104,6 +106,11 @@ services:
       - PASSWORD=${SERVER_PASSWORD}
       - PUBLIC=${PUBLIC_FLAG}
       - ENABLE_CROSSPLAY=${CROSSPLAY_FLAG}
+      # odin reads MODIFIERS as comma separated name=value and turns each into a
+      # -modifier flag. Note this is NOT SERVER_ARGS: that variable exists but odin
+      # does not feed it to the server binary, which is why -crossplay silently did
+      # nothing when it was passed that way.
+      - MODIFIERS=${WORLD_MODIFIERS}
       - TZ=UTC
       - AUTO_UPDATE=1
       - AUTO_UPDATE_SCHEDULE=0 1 * * *

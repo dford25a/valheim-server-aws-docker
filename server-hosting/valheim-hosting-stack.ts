@@ -149,6 +149,7 @@ export class ValheimHostingStack extends Stack {
         Config.serverPasswordParam,
         Config.discordWebhookParam,
         this.region,
+        `"${Config.worldModifiers}"`,
       ].join(' '),
     });
 
