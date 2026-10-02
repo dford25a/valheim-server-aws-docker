@@ -64,6 +64,9 @@ interface ServerStatus {
   ready: boolean;
   joinCode: string;
   players: number;
+  // Comma separated, from odin's player list. Absent on heartbeats written by older
+  // instances, so treat it as optional.
+  names?: string;
   version: string;
   updatedAt: string;
 }
@@ -135,8 +138,9 @@ export const handler = async (event: ControlEvent) => {
     const status = await getServerStatus();
 
     if (status?.ready) {
-      const who =
+      const count =
         status.players === 1 ? '1 player online' : `${status.players} players online`;
+      const who = status.players > 0 && status.names ? `${count} (${status.names})` : count;
       message =
         `Valheim server is up at \`${serverIp}:${GAME_PORT}\`\n` +
         `Join code: \`${status.joinCode}\` (console/Game Pass players need this)\n` +
