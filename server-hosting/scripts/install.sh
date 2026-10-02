@@ -156,17 +156,29 @@ BUCKET="__BUCKET__"
 REGION="__REGION__"
 AWS=/usr/local/bin/aws
 
-logs=$(docker logs --since 15m valheim 2>&1 | sed -e 's/\x1b\[[0-9;]*m//g')
+health=$(docker inspect valheim --format '{{.State.Health.Status}}' 2>/dev/null || echo missing)
+
+# Read the container's whole log, not a recent window. The join code, version and
+# session registration are logged ONCE at startup, so a `--since 15m` window loses
+# them a quarter of an hour into a session and the server reads as "starting up"
+# while it is healthy and serving. The container is recreated on every start, so
+# its log only ever covers the current run and cannot surface a stale join code;
+# the json-file rotation in the compose file keeps it bounded.
+logs=$(docker logs valheim 2>&1 | sed -e 's/\x1b\[[0-9;]*m//g')
 
 joinCode=$(echo "$logs" | grep -oE 'join code [0-9]+' | tail -1 | grep -oE '[0-9]+')
-players=$(echo "$logs" | grep -oE 'is active with [0-9]+ player' | tail -1 | grep -oE '[0-9]+')
 version=$(echo "$logs" | grep -oE 'Valheim version: [^ ]+' | tail -1 | awk '{print $3}')
+# Valheim logs the player count whenever it changes: "now N player(s)" on join or
+# leave, "is active with N player(s)" on registration. The latest of either is the
+# current count.
+players=$(echo "$logs" | grep -oE '(now|is active with) [0-9]+ player' | tail -1 | grep -oE '[0-9]+')
 
-# "ready" means the world finished loading and the session registered, not merely
-# that the container is up — the container is up for several minutes while the
-# game is still installing and loading.
+# Ready needs both. The join code proves this run loaded the world and registered
+# a session; the health check proves it is still alive now. A join code from earlier
+# in the run says nothing about whether the server has since wedged, and the image's
+# health check is not documented as waiting for the world to load.
 ready=false
-if [ -n "$joinCode" ]; then ready=true; fi
+if [ -n "$joinCode" ] && [ "$health" = "healthy" ]; then ready=true; fi
 
 cat > /tmp/status.json << JSON
 {
